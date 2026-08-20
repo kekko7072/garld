@@ -11,6 +11,8 @@ readme = "README.md"
 keywords = ["github-actions", "self-hosted-runner", "ci", "dashboard", "monitoring"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["/dist"]
+# `cargo run` should mean the console program, not the windowed one.
+default-run = "garld"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }

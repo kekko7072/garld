@@ -133,6 +133,8 @@ pub fn run_widget(roots: Vec<PathBuf>) -> eframe::Result {
         .with_resizable(true)
         .with_app_id("garld-widget");
 
+    // Only macOS mutates this, to set the activation policy below.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()

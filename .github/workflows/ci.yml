@@ -52,4 +52,4 @@ jobs:
       # you'd install it on a headless build host.
       - run: cargo build --no-default-features
       - name: Smoke-test the CLI on a host with no runners
-        run: cargo run --no-default-features -- info
+        run: cargo run --bin garld --no-default-features -- info
