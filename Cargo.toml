@@ -1,0 +1,40 @@
+[package]
+name = "garld"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "GitHub Action Runner Local Dashboard — local runners, jobs and host metrics in a CLI, a window, a widget and the menu bar"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anstream = "0.6"
+anstyle = "1"
+terminal_size = "0.4"
+ctrlc = "3"
+sysinfo = { version = "0.39", default-features = false, features = ["system", "user"] }
+
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+], optional = true }
+egui_extras = { version = "0.36", optional = true }
+tray-icon = { version = "0.24", optional = true }
+winit = { version = "0.30", optional = true }
+
+[features]
+default = ["gui", "tray"]
+# Dashboard window and desktop widget.
+gui = ["dep:eframe", "dep:egui_extras", "dep:winit"]
+# Menu-bar item on macOS, notification-area icon on Windows and Linux.
+# On Linux this needs GTK3 and libxdo development packages at build time.
+tray = ["dep:tray-icon", "dep:winit"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
