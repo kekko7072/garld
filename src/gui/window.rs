@@ -7,10 +7,10 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::format as fmt;
 use crate::probe::{ProcInfo, Query, SortKey, SortKeyOrDefault, select};
-use crate::runner::{Job, Runner, RunnerState};
 
 use super::Live;
 use super::parts::{self, Palette};
+use super::runner_card::{self, CardOptions};
 
 pub struct WindowApp {
     live: Live,
@@ -21,6 +21,7 @@ pub struct WindowApp {
     /// 0 means no limit.
     limit: usize,
     selected: Option<u32>,
+    card: CardOptions,
 }
 
 impl WindowApp {
@@ -40,6 +41,7 @@ impl WindowApp {
             runners_only: true,
             limit: 0,
             selected: None,
+            card: CardOptions::default(),
         }
     }
 
@@ -198,7 +200,11 @@ impl WindowApp {
                     "jobs",
                     job_cpu / capacity,
                     &format!("{job_cpu:.0}%"),
-                    if job_cpu > 0.0 { palette.ok } else { palette.muted },
+                    if job_cpu > 0.0 {
+                        palette.ok
+                    } else {
+                        palette.muted
+                    },
                 );
                 parts::sparkline(
                     ui,
@@ -244,14 +250,7 @@ impl WindowApp {
         ui.add_space(6.0);
 
         if report.runners.is_empty() {
-            parts::card(ui, |ui| {
-                ui.label(RichText::new("No runner installs found").strong());
-                ui.label(parts::muted(
-                    ui,
-                    "garld looks at running processes and the usual install paths. \
-                     Pass --runner-dir, or set GARLD_RUNNER_DIRS.",
-                ));
-            });
+            runner_card::empty_state(ui);
             return;
         }
 
@@ -260,137 +259,10 @@ impl WindowApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for runner in &runners {
-                    self.runner_card(ui, runner, now);
+                    runner_card::show(ui, runner, now, &self.card);
                     ui.add_space(8.0);
                 }
             });
-    }
-
-    fn runner_card(&mut self, ui: &mut egui::Ui, runner: &Runner, now: i64) {
-        let palette = Palette::of(ui);
-        parts::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                parts::pill(ui, runner.state.label(), palette.state(runner.state));
-                ui.label(RichText::new(runner.name()).strong());
-            });
-
-            if let Some(scope) = runner.scope() {
-                let mut line = scope.to_string();
-                if let Some(version) = &runner.version {
-                    line.push_str(&format!(" · v{version}"));
-                }
-                if let Some(pool) = runner.config.as_ref().and_then(|c| c.pool_name.as_deref()) {
-                    line.push_str(&format!(" · pool {pool}"));
-                }
-                ui.label(parts::muted(ui, line));
-            }
-
-            ui.add_space(4.0);
-
-            match (&runner.current_job, runner.state) {
-                (Some(job), _) => self.active_job(ui, runner, job, now),
-                (None, RunnerState::Idle) => {
-                    ui.label(parts::muted(
-                        ui,
-                        format!(
-                            "waiting for work · listener up {}",
-                            fmt::duration(runner.listener_uptime)
-                        ),
-                    ));
-                }
-                (None, _) => {
-                    ui.label(
-                        RichText::new("not running")
-                            .size(11.0)
-                            .color(palette.bad),
-                    );
-                    if let Some(service) = &runner.service {
-                        ui.label(parts::muted(ui, format!("service {service}")));
-                    }
-                }
-            }
-
-            if !runner.recent_jobs.is_empty() {
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label(parts::muted(ui, "recent"));
-                    if let Some(rate) = runner.success_rate() {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(parts::muted(ui, format!("{:.0}% pass", rate * 100.0)));
-                            },
-                        );
-                    }
-                });
-                for job in runner.recent_jobs.iter().take(6) {
-                    self.history_row(ui, job, runner.scope());
-                }
-            }
-        });
-    }
-
-    fn active_job(&self, ui: &mut egui::Ui, runner: &Runner, job: &Job, now: i64) {
-        let palette = Palette::of(ui);
-
-        // The repository leads: it's the part that differs between jobs on a
-        // runner that serves many repos.
-        if let Some(repository) = job.short_repo(runner.scope()) {
-            ui.label(
-                RichText::new(repository)
-                    .strong()
-                    .size(12.0)
-                    .color(palette.idle),
-            )
-            .on_hover_text(job.repository.clone().unwrap_or_default());
-        }
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(job.full_name()).strong().color(palette.ok));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(fmt::duration(job.duration_secs(now)))
-                        .size(11.0)
-                        .monospace()
-                        .color(palette.warn),
-                );
-            });
-        });
-        ui.label(parts::muted(
-            ui,
-            format!(
-                "{:.0}% cpu · {} · {} processes",
-                runner.job_cpu,
-                fmt::bytes(runner.job_mem),
-                runner.job_proc_count(),
-            ),
-        ));
-    }
-
-    fn history_row(&self, ui: &mut egui::Ui, job: &Job, scope: Option<&str>) {
-        let palette = Palette::of(ui);
-        let color = palette.result(job.result);
-        ui.horizontal(|ui| {
-            parts::dot(ui, color, job.result.is_some());
-            ui.label(RichText::new(fmt::truncate(&job.labelled(scope), 32)).size(11.0))
-                .on_hover_text(match job.result {
-                    Some(result) => format!(
-                        "{}\n{} — {}",
-                        job.repository.as_deref().unwrap_or("unknown repository"),
-                        job.full_name(),
-                        result.label()
-                    ),
-                    None => format!("{} — no result recorded", job.full_name()),
-                });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(parts::muted(
-                    ui,
-                    fmt::duration(job.duration_secs(job.finished.unwrap_or(job.started))),
-                ));
-            });
-        });
     }
 
     fn process_panel(&mut self, ui: &mut egui::Ui) {

@@ -106,6 +106,10 @@ impl JobResult {
         }
     }
 
+    /// Only the window's tooltip spells the result out; the CLI uses [`glyph`].
+    ///
+    /// [`glyph`]: JobResult::glyph
+    #[cfg(feature = "gui")]
     pub fn label(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
@@ -352,6 +356,7 @@ impl RunnerReport {
     }
 
     /// Jobs executing across all runners.
+    #[cfg(feature = "tray")]
     pub fn active_jobs(&self) -> Vec<(&Runner, &Job)> {
         self.runners
             .iter()
@@ -542,11 +547,11 @@ fn inspect(
     // killed mid-job no completion line is ever written. A live worker process
     // is the authority, so an unfinished trailing job without one is history.
     let mut recent_jobs = recent_jobs;
-    if worker_pids.is_empty() {
-        if let Some(job) = current_job.take() {
-            recent_jobs.insert(0, job);
-            recent_jobs.truncate(HISTORY_LIMIT);
-        }
+    if worker_pids.is_empty()
+        && let Some(job) = current_job.take()
+    {
+        recent_jobs.insert(0, job);
+        recent_jobs.truncate(HISTORY_LIMIT);
     }
 
     // Which repository each job was building. The listener log never says, so
@@ -657,7 +662,8 @@ fn classify(proc: &ProcInfo) -> Option<Role> {
         _ => {
             // Wrapper scripts show up as bash/sh with the script in argv.
             let cmd = proc.command.as_str();
-            if cmd.contains("runsvc.sh") || cmd.contains("run-helper.sh") || cmd.contains("run.sh") {
+            if cmd.contains("runsvc.sh") || cmd.contains("run-helper.sh") || cmd.contains("run.sh")
+            {
                 Some(Role::Supervisor)
             } else {
                 None
@@ -669,8 +675,7 @@ fn classify(proc: &ProcInfo) -> Option<Role> {
 /// Whether a process belongs to the install at `root`, by path prefix.
 fn belongs_to(proc: &ProcInfo, root: &Path) -> bool {
     let root = root.to_string_lossy();
-    proc.exe.as_deref().is_some_and(|e| e.starts_with(&*root))
-        || proc.command.contains(&*root)
+    proc.exe.as_deref().is_some_and(|e| e.starts_with(&*root)) || proc.command.contains(&*root)
 }
 
 /// Recovers an install root from a runner process's own paths.
@@ -945,7 +950,10 @@ fn read_head(path: &Path, limit: u64) -> String {
         return String::new();
     };
     let mut buf = Vec::new();
-    if std::io::Read::take(file, limit).read_to_end(&mut buf).is_err() {
+    if std::io::Read::take(file, limit)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
         return String::new();
     }
     String::from_utf8_lossy(&buf).into_owned()
@@ -975,11 +983,7 @@ fn newest_log(diag: &Path, prefix: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(diag).ok()?;
     entries
         .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with(prefix)
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
         .filter_map(|e| {
             let modified = e.metadata().ok()?.modified().ok()?;
             Some((modified, e.path()))
@@ -1019,21 +1023,20 @@ fn read_tail(path: &Path) -> String {
 
 /// Scrapes `[... INFO Listener] Version: 2.336.0`.
 fn parse_version(log: &str) -> Option<String> {
-    log.lines()
-        .find_map(|line| {
-            let rest = line.split("Version: ").nth(1)?;
-            let version = rest
-                .trim()
-                .trim_matches('\'')
-                .split_whitespace()
-                .next()?
-                .trim_matches('\'');
-            version
-                .chars()
-                .next()
-                .filter(char::is_ascii_digit)
-                .map(|_| version.to_string())
-        })
+    log.lines().find_map(|line| {
+        let rest = line.split("Version: ").nth(1)?;
+        let version = rest
+            .trim()
+            .trim_matches('\'')
+            .split_whitespace()
+            .next()?
+            .trim_matches('\'');
+        version
+            .chars()
+            .next()
+            .filter(char::is_ascii_digit)
+            .map(|_| version.to_string())
+    })
 }
 
 /// Rebuilds job history from listener log lines.

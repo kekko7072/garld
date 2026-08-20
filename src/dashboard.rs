@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::probe::{Probe, Snapshot};
-use crate::runner::{self, LogCache, RunnerReport, RunnerState};
+use crate::runner::{self, LogCache, RunnerReport};
 
 /// A complete reading of the host at one instant.
 #[derive(Debug, Clone, Serialize)]
@@ -16,9 +16,12 @@ pub struct Dashboard {
     pub sampled_at: i64,
 }
 
+/// Summaries that only the status item needs: it has one line of text and one
+/// icon to say everything in.
+#[cfg(feature = "tray")]
 impl Dashboard {
-    /// The one-line summary used by the tray title, the widget header and the
-    /// CLI's first line. Kept short enough for a macOS menu bar.
+    /// The one-line summary used by the tray title and the widget header. Kept
+    /// short enough for a macOS menu bar.
     pub fn headline(&self) -> String {
         let busy = self.runners.busy();
         let total = self.runners.runners.len();
@@ -49,9 +52,14 @@ impl Dashboard {
             .min_by_key(|(_, job)| job.started)
             .map(|(runner, job)| job.labelled(runner.scope()))
     }
+}
 
-    /// Overall state, worst-first, for colouring a single indicator.
-    pub fn status(&self) -> RunnerState {
+/// Used by both the widget and the status item to colour a single indicator.
+#[cfg(any(feature = "gui", feature = "tray"))]
+impl Dashboard {
+    /// Overall state, worst-first.
+    pub fn status(&self) -> crate::runner::RunnerState {
+        use crate::runner::RunnerState;
         if self.runners.busy() > 0 {
             RunnerState::Busy
         } else if self.runners.idle() > 0 {

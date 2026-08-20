@@ -1,33 +1,33 @@
-//! The desktop widget: a small borderless panel that floats above other
-//! windows and answers "are my runners busy?" at a glance.
+//! The desktop widget: the runner card, floating above everything else.
 //!
-//! Because it has no title bar, the whole background is a drag handle and it
-//! provides its own close button.
+//! Same card the dashboard window shows, in a borderless translucent panel that
+//! stays on top. Because it has no title bar, the background is a drag handle
+//! and it provides its own close button.
 
 use std::path::PathBuf;
 
 use eframe::egui::{self, RichText};
 
 use crate::format as fmt;
-use crate::runner::RunnerState;
+use crate::{Surface, spawn_self};
 
+use super::Live;
 use super::parts::{self, Palette};
-use super::{Live, spawn_self};
+use super::runner_card::{self, CardOptions};
 
 pub struct WidgetApp {
     live: Live,
-    /// Chrome is revealed on hover so the resting state stays uncluttered.
-    hovered: bool,
+    card: CardOptions,
 }
 
 impl WidgetApp {
     pub fn new(cc: &eframe::CreationContext<'_>, roots: Vec<PathBuf>) -> Self {
         cc.egui_ctx.all_styles_mut(|style| {
-            style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+            style.spacing.item_spacing = egui::vec2(6.0, 5.0);
         });
         Self {
             live: Live::new(roots, 1.5),
-            hovered: false,
+            card: CardOptions { history: 6 },
         }
     }
 }
@@ -41,7 +41,6 @@ impl eframe::App for WidgetApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.live.tick();
-        self.hovered = ctx.input(|i| i.pointer.has_pointer());
 
         let dark = ui.visuals().dark_mode;
         // Translucent enough to feel like a desktop widget, opaque enough that
@@ -63,7 +62,7 @@ impl eframe::App for WidgetApp {
                     egui::Color32::from_rgb(214, 217, 222)
                 },
             ))
-            .inner_margin(egui::Margin::same(12));
+            .inner_margin(egui::Margin::same(10));
 
         egui::CentralPanel::default()
             .frame(frame)
@@ -86,30 +85,26 @@ impl WidgetApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
 
+        // Must be "the pointer is over this window", not `has_pointer`, which
+        // is true whenever a pointer exists at all. This window floats above
+        // everything, so with the wrong predicate the close button sat visible
+        // under wherever the cursor happened to be and the next click anywhere
+        // on screen dismissed the widget.
+        let hovered = ui.rect_contains_pointer(ui.max_rect());
+
         let palette = Palette::of(ui);
         let data = &self.live.data;
-        let status = data.status();
+        let now = data.sampled_at;
         let metrics = data.snapshot.metrics.clone();
+        let runners = data.runners.runners.clone();
 
+        // A borderless window needs its own way out, but the buttons shouldn't
+        // compete with the card for attention when the pointer is elsewhere.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("garld").strong().size(12.0));
-            parts::pill(
-                ui,
-                match status {
-                    RunnerState::Busy => "building",
-                    RunnerState::Idle => "idle",
-                    RunnerState::Offline => "offline",
-                },
-                palette.state(status),
-            );
-
+            ui.label(parts::muted(ui, "garld"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.hovered {
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Close widget")
-                        .clicked()
-                    {
+                if hovered {
+                    if ui.small_button("×").on_hover_text("Close widget").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui
@@ -117,99 +112,68 @@ impl WidgetApp {
                         .on_hover_text("Open the full dashboard")
                         .clicked()
                     {
-                        spawn_self("gui");
+                        spawn_self(Surface::Window);
                     }
+                } else {
+                    // Reserve the same height so the card doesn't shift when
+                    // the buttons appear.
+                    ui.allocate_space(egui::vec2(0.0, 18.0));
                 }
             });
         });
 
-        ui.add_space(6.0);
-
-        let runners = data.runners.runners.clone();
-        if runners.is_empty() {
-            ui.label(parts::muted(ui, "no runners on this host"));
-        } else {
-            for runner in runners.iter().take(3) {
-                ui.horizontal(|ui| {
-                    parts::dot(
-                        ui,
-                        palette.state(runner.state),
-                        runner.state == RunnerState::Busy,
-                    );
-                    ui.label(RichText::new(fmt::truncate(&runner.name(), 20)).size(11.0));
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        match &runner.current_job {
-                            Some(job) => {
-                                ui.label(
-                                    RichText::new(fmt::duration(
-                                        job.duration_secs(data.sampled_at),
-                                    ))
-                                    .size(11.0)
-                                    .monospace()
-                                    .color(palette.warn),
-                                );
-                            }
-                            None => {
-                                ui.label(parts::muted(ui, runner.state.label()));
-                            }
-                        }
-                    });
-                });
-
-                if let Some(job) = &runner.current_job {
-                    ui.label(
-                        RichText::new(fmt::truncate(&job.labelled(runner.scope()), 36))
-                            .size(11.0)
-                            .color(palette.ok),
-                    )
-                    .on_hover_text(job.repository.clone().unwrap_or_default());
-                    ui.label(parts::muted(
-                        ui,
-                        format!(
-                            "{:.0}% cpu · {} · {} procs",
-                            runner.job_cpu,
-                            fmt::bytes(runner.job_mem),
-                            runner.job_proc_count()
-                        ),
-                    ));
+        // Shrink to the cards' own height so the footer sits directly under
+        // them instead of being pushed to the bottom of the window; it still
+        // grows and scrolls when several runners don't fit.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                if runners.is_empty() {
+                    runner_card::empty_state(ui);
+                    return;
                 }
-            }
-            if runners.len() > 3 {
-                ui.label(parts::muted(ui, format!("+{} more", runners.len() - 3)));
-            }
-        }
+                for (index, runner) in runners.iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(8.0);
+                    }
+                    runner_card::show(ui, runner, now, &self.card);
+                }
+            });
 
         ui.add_space(6.0);
 
+        // Slim host footer: the widget floats above other work, so the machine's
+        // own load is worth a line even when no job is running.
         let cpu_fraction = metrics.cpu_percent / 100.0;
-        parts::metric_row(
-            ui,
-            "cpu",
-            cpu_fraction,
-            &format!("{:.0}%", metrics.cpu_percent),
-            palette.load(cpu_fraction),
-        );
         let mem_fraction = metrics.mem_percent() / 100.0;
-        parts::metric_row(
-            ui,
-            "mem",
-            mem_fraction,
-            &format!("{:.0}%", metrics.mem_percent()),
-            palette.load(mem_fraction),
-        )
-        .on_hover_text(format!(
-            "{} of {} used",
-            fmt::bytes(metrics.mem_used),
-            fmt::bytes(metrics.mem_total)
-        ));
-
-        parts::sparkline(
-            ui,
-            &self.live.cpu,
-            100.0,
-            egui::vec2(ui.available_width(), ui.available_height().clamp(22.0, 64.0)),
-            palette.load(cpu_fraction),
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("cpu {:.0}%", metrics.cpu_percent))
+                    .size(11.0)
+                    .monospace()
+                    .color(palette.load(cpu_fraction)),
+            );
+            ui.label(parts::muted(ui, "·"));
+            ui.label(
+                RichText::new(format!("mem {:.0}%", metrics.mem_percent()))
+                    .size(11.0)
+                    .monospace()
+                    .color(palette.load(mem_fraction)),
+            )
+            .on_hover_text(format!(
+                "{} of {} used",
+                fmt::bytes(metrics.mem_used),
+                fmt::bytes(metrics.mem_total)
+            ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                parts::sparkline(
+                    ui,
+                    &self.live.cpu,
+                    100.0,
+                    egui::vec2(ui.available_width().min(120.0), 14.0),
+                    palette.load(cpu_fraction),
+                );
+            });
+        });
     }
 }

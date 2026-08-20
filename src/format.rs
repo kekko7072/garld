@@ -23,6 +23,7 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Formats a byte-per-sample count as a rate, or `-` when idle.
+#[cfg(feature = "gui")]
 pub fn rate(n: u64) -> String {
     if n == 0 {
         "-".to_string()
@@ -33,7 +34,12 @@ pub fn rate(n: u64) -> String {
 
 /// Formats a wall-clock duration compactly: `42s`, `12m30s`, `3h05m`, `9d21h`.
 pub fn duration(secs: u64) -> String {
-    let (d, h, m, s) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60, secs % 60);
+    let (d, h, m, s) = (
+        secs / 86_400,
+        secs % 86_400 / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+    );
     if d > 0 {
         format!("{d}d{h:02}h")
     } else if h > 0 {

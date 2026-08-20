@@ -85,9 +85,7 @@ fn draw_loop(
 
         // Sized after sampling, since the runner blocks above the table vary
         // in height with how many runners exist and whether they're busy.
-        opts.query.limit = user_limit.or_else(|| {
-            Some(rows_for_processes(height, opts, &data))
-        });
+        opts.query.limit = user_limit.or_else(|| Some(rows_for_processes(height, opts, &data)));
 
         let mut frame = render::dashboard(&data, opts);
         if interactive {
@@ -154,7 +152,11 @@ fn terminal_dimensions() -> (usize, usize) {
 }
 
 /// How many process rows fit under the runner section.
-fn rows_for_processes(height: usize, opts: &ViewOptions, data: &crate::dashboard::Dashboard) -> usize {
+fn rows_for_processes(
+    height: usize,
+    opts: &ViewOptions,
+    data: &crate::dashboard::Dashboard,
+) -> usize {
     // host header (2) + runners heading (1) + table heading (2) + footer (2)
     const CHROME: usize = 7;
 

@@ -1,6 +1,7 @@
 //! Native surfaces: the dashboard window and the always-on-top desktop widget.
 
 mod parts;
+mod runner_card;
 mod widget;
 mod window;
 
@@ -124,7 +125,7 @@ pub fn run_widget(roots: Vec<PathBuf>) -> eframe::Result {
     let viewport = egui::ViewportBuilder::default()
         .with_title("garld")
         .with_inner_size([330.0, 232.0])
-        .with_min_inner_size([260.0, 150.0])
+        .with_min_inner_size([300.0, 200.0])
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
@@ -152,15 +153,4 @@ pub fn run_widget(roots: Vec<PathBuf>) -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(widget::WidgetApp::new(cc, roots)))),
     )
-}
-
-/// Re-launches this executable with another subcommand.
-///
-/// Used by the widget and the tray item to open sibling surfaces. Each surface
-/// owns its own event loop, so they can't share a process.
-pub fn spawn_self(subcommand: &str) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let _ = std::process::Command::new(exe).arg(subcommand).spawn();
 }

@@ -1,1 +1,13 @@
 /target
+**/*.rs.bk
+*.pdb
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Packaging output
+/dist
+packaging/icon/*.iconset

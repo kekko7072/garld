@@ -26,7 +26,9 @@ fn dim() -> Style {
 }
 
 fn heading() -> Style {
-    Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
+    Style::new()
+        .bold()
+        .fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
 }
 
 /// Green under half load, yellow approaching saturation, red at it.
@@ -175,12 +177,7 @@ pub fn header(data: &Dashboard, opts: &ViewOptions) -> String {
             d = dim(),
         );
     }
-    let _ = writeln!(
-        out,
-        "   {d}{} procs{d:#}",
-        metrics.process_count,
-        d = dim()
-    );
+    let _ = writeln!(out, "   {d}{} procs{d:#}", metrics.process_count, d = dim());
 
     out
 }
@@ -195,8 +192,16 @@ pub fn runners(data: &Dashboard, opts: &ViewOptions) -> String {
         "{h}RUNNERS{h:#}  {g}{busy} busy{g:#} {d}·{d:#} {idle} idle {d}·{d:#} {off_style}{off} offline{off_style:#}",
         h = heading(),
         d = dim(),
-        g = if report.busy() > 0 { fg(AnsiColor::Green).bold() } else { dim() },
-        off_style = if report.offline() > 0 { fg(AnsiColor::Red) } else { dim() },
+        g = if report.busy() > 0 {
+            fg(AnsiColor::Green).bold()
+        } else {
+            dim()
+        },
+        off_style = if report.offline() > 0 {
+            fg(AnsiColor::Red)
+        } else {
+            dim()
+        },
         busy = report.busy(),
         idle = report.idle(),
         off = report.offline(),

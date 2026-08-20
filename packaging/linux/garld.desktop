@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=garld
+GenericName=GitHub Action Runner Dashboard
+Comment=Local dashboard for self-hosted GitHub Actions runners
+Exec=garld-gui
+Icon=garld
+Terminal=false
+Categories=Development;Monitor;System;
+Keywords=github;actions;runner;ci;dashboard;monitor;
+StartupWMClass=garld

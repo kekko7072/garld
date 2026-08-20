@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.95"
 description = "GitHub Action Runner Local Dashboard — local runners, jobs and host metrics in a CLI, a window, a widget and the menu bar"
 license = "MIT"
+repository = "https://github.com/kekko7072/garld"
+homepage = "https://github.com/kekko7072/garld"
+readme = "README.md"
+keywords = ["github-actions", "self-hosted-runner", "ci", "dashboard", "monitoring"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["/dist"]
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
@@ -26,6 +32,25 @@ egui_extras = { version = "0.36", optional = true }
 tray-icon = { version = "0.24", optional = true }
 winit = { version = "0.30", optional = true }
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[lib]
+name = "garld"
+path = "src/lib.rs"
+
+# The console program: CLI, live terminal view, and the graphical surfaces by name.
+[[bin]]
+name = "garld"
+path = "src/main.rs"
+
+# The windowed program: built for the Windows windowing subsystem so a
+# double-click opens a window rather than a console. What .app bundles point at.
+[[bin]]
+name = "garld-gui"
+path = "src/bin/garld-gui.rs"
+required-features = ["gui"]
+
 [features]
 default = ["gui", "tray"]
 # Dashboard window and desktop widget.
@@ -33,6 +58,23 @@ gui = ["dep:eframe", "dep:egui_extras", "dep:winit"]
 # Menu-bar item on macOS, notification-area icon on Windows and Linux.
 # On Linux this needs GTK3 and libxdo development packages at build time.
 tray = ["dep:tray-icon", "dep:winit"]
+
+# `cargo deb` packaging for Debian and Ubuntu.
+[package.metadata.deb]
+maintainer = "Francesco Vezzani"
+copyright = "2026, Francesco Vezzani"
+extended-description = "garld shows the self-hosted GitHub Actions runners installed on this machine, what they are running right now, which repository each job belongs to, and what it costs the host. Reads only local state: no GitHub token and no network."
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/garld", "usr/bin/", "755"],
+    ["target/release/garld-gui", "usr/bin/", "755"],
+    ["packaging/linux/garld.desktop", "usr/share/applications/", "644"],
+    ["packaging/icon/garld-256.png", "usr/share/icons/hicolor/256x256/apps/garld.png", "644"],
+    ["packaging/icon/garld-128.png", "usr/share/icons/hicolor/128x128/apps/garld.png", "644"],
+    ["packaging/icon/garld-64.png", "usr/share/icons/hicolor/64x64/apps/garld.png", "644"],
+    ["README.md", "usr/share/doc/garld/README.md", "644"],
+]
 
 [profile.release]
 opt-level = 3

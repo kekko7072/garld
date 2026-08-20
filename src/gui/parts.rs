@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 
 use eframe::egui::{
-    self, Color32, CornerRadius, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Color32, CornerRadius, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
+    Vec2,
 };
 
 use crate::runner::{JobResult, RunnerState};
@@ -176,13 +177,12 @@ pub fn metric_row(
     ui.horizontal(|ui| {
         ui.add_sized(
             Vec2::new(38.0, 14.0),
-            egui::Label::new(RichText::new(label).size(11.0).color(palette.muted)).selectable(false),
+            egui::Label::new(RichText::new(label).size(11.0).color(palette.muted))
+                .selectable(false),
         );
 
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width() - 64.0, 8.0),
-            Sense::hover(),
-        );
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width() - 64.0, 8.0), Sense::hover());
         // Cloned so the painter's borrow doesn't outlive the next `ui` use;
         // `Painter` is a handle, so this is cheap.
         let painter = ui.painter().clone();
@@ -254,5 +254,7 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// A dimmed caption.
 pub fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
-    RichText::new(text.into()).size(11.0).color(Palette::of(ui).muted)
+    RichText::new(text.into())
+        .size(11.0)
+        .color(Palette::of(ui).muted)
 }

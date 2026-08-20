@@ -20,8 +20,9 @@ use winit::window::WindowId;
 
 use crate::dashboard::{Dashboard, Source};
 use crate::format as fmt;
-use crate::gui::spawn_self;
 use crate::runner::RunnerState;
+#[cfg(feature = "gui")]
+use crate::{Surface, spawn_self};
 
 /// Seconds between samples. Slower than the GUI: a menu bar doesn't need 1 Hz,
 /// and this runs all day.
@@ -60,7 +61,10 @@ struct Readout {
 }
 
 struct Actions {
+    /// Absent in a tray-only build, which has no window to open.
+    #[cfg(feature = "gui")]
     dashboard: MenuId,
+    #[cfg(feature = "gui")]
     widget: MenuId,
     quit: MenuId,
 }
@@ -102,31 +106,35 @@ impl TrayApp {
         let host = MenuItem::new("", false, None);
         let top = MenuItem::new("", false, None);
 
-        let dashboard = MenuItem::new("Open Dashboard", true, None);
-        let widget = MenuItem::new("Open Desktop Widget", true, None);
-        let quit = MenuItem::new("Quit garld", true, None);
+        let readout_items: [&dyn tray_icon::menu::IsMenuItem; 5] =
+            [&status, &job, &host, &top, &PredefinedMenuItem::separator()];
+        if menu.append_items(&readout_items).is_err() {
+            return;
+        }
 
-        let separator = PredefinedMenuItem::separator();
-        let items: [&dyn tray_icon::menu::IsMenuItem; 10] = [
-            &status,
-            &job,
-            &host,
-            &top,
-            &separator,
-            &dashboard,
-            &widget,
-            &PredefinedMenuItem::separator(),
-            &quit,
-            // Trailing separator keeps the layout stable if a platform elides
-            // a leading or trailing one.
-            &PredefinedMenuItem::separator(),
-        ];
-        if menu.append_items(&items).is_err() {
+        // A build without the `gui` feature has no window or widget to open, so
+        // it doesn't offer to.
+        #[cfg(feature = "gui")]
+        let (dashboard, widget) = {
+            let dashboard = MenuItem::new("Open Dashboard", true, None);
+            let widget = MenuItem::new("Open Desktop Widget", true, None);
+            let items: [&dyn tray_icon::menu::IsMenuItem; 3] =
+                [&dashboard, &widget, &PredefinedMenuItem::separator()];
+            if menu.append_items(&items).is_err() {
+                return;
+            }
+            (dashboard, widget)
+        };
+
+        let quit = MenuItem::new("Quit garld", true, None);
+        if menu.append(&quit).is_err() {
             return;
         }
 
         self.actions = Some(Actions {
+            #[cfg(feature = "gui")]
             dashboard: dashboard.id().clone(),
+            #[cfg(feature = "gui")]
             widget: widget.id().clone(),
             quit: quit.id().clone(),
         });
@@ -238,12 +246,15 @@ impl TrayApp {
         };
         let mut quit = false;
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == actions.dashboard {
-                spawn_self("gui");
-            } else if event.id == actions.widget {
-                spawn_self("widget");
-            } else if event.id == actions.quit {
+            if event.id == actions.quit {
                 quit = true;
+                continue;
+            }
+            #[cfg(feature = "gui")]
+            if event.id == actions.dashboard {
+                spawn_self(Surface::Window);
+            } else if event.id == actions.widget {
+                spawn_self(Surface::Widget);
             }
         }
         quit
