@@ -54,16 +54,26 @@ A self-hosted runner is a black box on your own hardware. GitHub's web UI tells 
 ### macOS
 
 ```bash
-brew install --cask kekko7072/garld/garld   # the app, into /Applications
-brew install kekko7072/garld/garld          # just the CLI
+brew tap kekko7072/garld
+brew install garld          # garld and garld-gui on your PATH, built from source
+brew install --cask garld   # garld.app in /Applications
 ```
 
-Or download `garld-<version>-macos.dmg` from [Releases][releases] and drag
-**garld** to Applications. The app is not notarised, so the first launch needs
-**right-click → Open** (or `xattr -d com.apple.quarantine /Applications/garld.app`).
+The formula is the one to reach for if you want the command line: it compiles
+locally, so nothing is quarantined and macOS asks nothing of you. Add the cask
+too if you want garld in Launchpad. They install different things and do not
+conflict.
 
-The bundle contains both programs: `garld.app` opens the dashboard, and the
-`garld` CLI inside it is what the formula and cask link onto your `PATH`.
+Or download `garld-<version>-macos.dmg` from [Releases][releases] and drag
+**garld** to Applications.
+
+**First launch:** garld is signed ad-hoc, not notarised by Apple, so macOS asks
+you to confirm. Right-click **garld** in `/Applications`, choose **Open**, and
+confirm; later launches are normal.
+
+Notarisation needs a paid Apple Developer account, which this project doesn't
+have. If you'd rather avoid the prompt entirely, `brew install garld` or
+`cargo install` builds from source and Gatekeeper never gets involved.
 
 ### Windows
 
