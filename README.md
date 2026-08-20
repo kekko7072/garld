@@ -51,9 +51,46 @@ A self-hosted runner is a black box on your own hardware. GitHub's web UI tells 
 
 ## Install
 
+### macOS
+
+```bash
+brew install --cask kekko7072/garld/garld   # the app, into /Applications
+brew install kekko7072/garld/garld          # just the CLI
+```
+
+Or download `garld-<version>-macos.dmg` from [Releases][releases] and drag
+**garld** to Applications. The app is not notarised, so the first launch needs
+**right-click → Open** (or `xattr -d com.apple.quarantine /Applications/garld.app`).
+
+The bundle contains both programs: `garld.app` opens the dashboard, and the
+`garld` CLI inside it is what the formula and cask link onto your `PATH`.
+
+### Windows
+
+Download `garld-<version>-windows-x86_64.zip` from [Releases][releases] and unpack it.
+
+- `garld-gui.exe` — double-click for the dashboard (opens no console window)
+- `garld.exe` — the CLI, for a terminal
+
+### Linux
+
+```bash
+sudo dpkg -i garld_<version>_amd64.deb        # Debian, Ubuntu
+```
+
+Or unpack `garld-<version>-linux-<arch>.tar.gz` and run `./install.sh`, which
+installs into `~/.local` without root (`./install.sh --system` for `/usr/local`).
+Both add a desktop entry, so **garld** appears in your application menu.
+
 ### From source
 
 Requires Rust 1.95 or newer.
+
+```bash
+cargo install --git https://github.com/kekko7072/garld
+```
+
+Or clone and build:
 
 ```bash
 git clone https://github.com/kekko7072/garld
@@ -62,20 +99,18 @@ cargo build --release
 ./target/release/garld
 ```
 
-The binary is self-contained; copy it anywhere on your `PATH`.
+This produces two binaries: `garld` (console) and `garld-gui` (windowed).
 
-```bash
-cargo install --path .
-```
+#### Linux build dependencies
 
-### Linux build dependencies
-
-The window and widget need the usual X11/Wayland development packages, and the tray item additionally needs GTK 3 and `libxdo`:
+The window and widget need the usual X11/Wayland development packages, and the
+tray item additionally needs GTK 3 and `libxdo`:
 
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential libgtk-3-dev libxdo-dev \
-                 libxkbcommon-dev libwayland-dev libx11-dev
+                 libxkbcommon-dev libwayland-dev libx11-dev \
+                 libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
 # Fedora
 sudo dnf install gtk3-devel libxdo-devel libxkbcommon-devel wayland-devel
@@ -84,11 +119,22 @@ sudo dnf install gtk3-devel libxdo-devel libxkbcommon-devel wayland-devel
 Don't want the graphical surfaces at all? Build a smaller, dependency-free CLI:
 
 ```bash
-cargo build --release --no-default-features          # CLI only
-cargo build --release --no-default-features --features gui   # CLI + window + widget, no tray
+cargo build --release --no-default-features                  # CLI only
+cargo build --release --no-default-features --features gui   # no tray
 ```
 
 macOS and Windows need no extra packages.
+
+#### Building the installers yourself
+
+```bash
+packaging/macos/bundle.sh --universal --dmg   # dist/garld.app + dist/*.dmg
+packaging/linux/tarball.sh                    # dist/*.tar.gz
+cargo deb                                     # dist/*.deb
+python3 packaging/icon/make_icons.py packaging/icon   # regenerate the icons
+```
+
+[releases]: https://github.com/kekko7072/garld/releases
 
 ## Usage
 
@@ -181,6 +227,25 @@ cargo test
 ```
 
 If you're adding a parser for runner log output, add a test with a literal log excerpt — the existing ones in `src/runner.rs` show the pattern. Log formats vary between runner versions, and a sample in a test is the only thing that keeps that honest.
+
+## Releasing
+
+Tagging triggers [`release.yml`](.github/workflows/release.yml), which builds the
+universal macOS app and disk image, the Windows executables, and the Linux
+tarball and `.deb`, then publishes them with checksums.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Once the release is up, refresh the Homebrew tap:
+
+```bash
+packaging/homebrew/sync-tap.sh 0.1.0 ../homebrew-garld
+```
+
+That fills the version and checksums into the formula and cask templates in
+`packaging/homebrew/` and writes them into the tap checkout to commit.
 
 ## Licence
 

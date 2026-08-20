@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS app + dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the universal app and disk image
+        run: packaging/macos/bundle.sh --universal --dmg
+      - name: Package the command-line binaries
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          staging="dist/garld-$version-macos-cli"
+          mkdir -p "$staging"
+          cp dist/garld.app/Contents/MacOS/garld dist/garld.app/Contents/MacOS/garld-gui "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar -czf "dist/garld-$version-macos-cli.tar.gz" -C dist "$(basename "$staging")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
+
+  windows:
+    name: Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --all-features
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $staging = "dist/garld-$version-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item target/release/garld.exe, target/release/garld-gui.exe $staging
+          Copy-Item README.md, LICENSE $staging
+          Compress-Archive -Path "$staging/*" -DestinationPath "dist/garld-$version-windows-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  linux:
+    name: Linux tarball + deb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libxdo-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - run: packaging/linux/tarball.sh
+      - name: Build the .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --output dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  publish:
+    name: Publish release
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect and checksum
+        id: collect
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' \
+            -o -name '*.tar.gz' -o -name '*.deb' \) -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          echo "--- artifacts ---"
+          cat SHA256SUMS.txt
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          dmg_sha="$(sha256sum "garld-$version-macos.dmg" 2>/dev/null | cut -d' ' -f1 || true)"
+          echo "dmg_sha=$dmg_sha" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        run: |
+          version="${{ steps.collect.outputs.version }}"
+          cat > notes.md <<NOTES
+          ## Install
+
+          **macOS** — \`brew install --cask kekko7072/garld/garld\`, or download
+          \`garld-$version-macos.dmg\` and drag garld to Applications. The app is
+          not notarised, so the first launch needs right-click → Open.
+
+          **Windows** — download \`garld-$version-windows-x86_64.zip\` and run
+          \`garld-gui.exe\` for the dashboard, or \`garld.exe\` for the CLI.
+
+          **Linux** — \`sudo dpkg -i garld_${version}_amd64.deb\`, or unpack the
+          tarball and run \`./install.sh\`.
+
+          **From source** — \`cargo install --git https://github.com/kekko7072/garld\`
+
+          Checksums are in \`SHA256SUMS.txt\`. The macOS disk image checksum, for
+          the Homebrew cask, is \`${{ steps.collect.outputs.dmg_sha }}\`.
+          NOTES
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body_path: notes.md
+          draft: false
+          generate_release_notes: true
