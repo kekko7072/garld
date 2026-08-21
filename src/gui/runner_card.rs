@@ -52,13 +52,15 @@ pub fn show(ui: &mut Ui, runner: &Runner, now: i64, opts: &CardOptions) {
         match (&runner.current_job, runner.state) {
             (Some(job), _) => active_job(ui, runner, job, now),
             (None, RunnerState::Idle) => {
-                ui.label(parts::muted(
-                    ui,
-                    format!(
+                // Uptime is only shown when the listener process was readable.
+                let detail = match runner.listener_cost {
+                    Some(cost) => format!(
                         "waiting for work · listener up {}",
-                        fmt::duration(runner.listener_uptime)
+                        fmt::duration(cost.uptime_secs)
                     ),
-                ));
+                    None => "waiting for work".to_string(),
+                };
+                ui.label(parts::muted(ui, detail));
             }
             (None, _) => {
                 ui.label(RichText::new("not running").size(11.0).color(palette.bad));

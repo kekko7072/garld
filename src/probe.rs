@@ -311,6 +311,13 @@ impl Probe {
                 .join(" ");
             let disk = proc.disk_usage();
 
+            // A process the current user may not open reports no start time —
+            // routine on Windows, where the runner's service processes belong
+            // to `LocalSystem`. `run_time` then measures from the epoch and
+            // reports decades, so treat a missing start as an unknown age.
+            let start_time = proc.start_time();
+            let run_secs = if start_time == 0 { 0 } else { proc.run_time() };
+
             processes.push(ProcInfo {
                 pid: pid.as_u32(),
                 parent: proc.parent().map(|p| p.as_u32()),
@@ -324,7 +331,7 @@ impl Probe {
                 mem_percent: percent_of(mem_bytes, mem_total),
                 virtual_bytes: proc.virtual_memory(),
                 status: proc.status().to_string(),
-                run_secs: proc.run_time(),
+                run_secs,
                 cpu_time_ms: proc.accumulated_cpu_time(),
                 threads,
                 exe: proc
@@ -343,7 +350,7 @@ impl Probe {
                 disk_written: disk.written_bytes,
                 disk_read_total: disk.total_read_bytes,
                 disk_written_total: disk.total_written_bytes,
-                start_time: proc.start_time(),
+                start_time,
             });
         }
 
