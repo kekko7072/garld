@@ -204,6 +204,15 @@ impl RunnerState {
     }
 }
 
+/// What the listener process is costing the host.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ListenerCost {
+    pub cpu_percent: f32,
+    pub mem_bytes: u64,
+    /// Seconds the listener has been up.
+    pub uptime_secs: u64,
+}
+
 /// A runner install on this host, plus whatever it's doing right now.
 #[derive(Debug, Clone, Serialize)]
 pub struct Runner {
@@ -220,11 +229,13 @@ pub struct Runner {
     pub listener_pid: Option<u32>,
     pub worker_pids: Vec<u32>,
 
-    /// Listener's own usage — should stay near idle.
-    pub listener_cpu: f32,
-    pub listener_mem: u64,
-    /// Seconds the listener has been up.
-    pub listener_uptime: u64,
+    /// The listener's own usage — should stay near idle.
+    ///
+    /// `None` when the listener is running but its counters are unreadable,
+    /// which is the ordinary view of a Windows service runner from an
+    /// unelevated garld. Reporting zeroes there would be a claim garld can't
+    /// support; absent is the truth.
+    pub listener_cost: Option<ListenerCost>,
 
     /// Worker processes *and every descendant*, i.e. the running job's real cost.
     pub job_cpu: f32,
@@ -459,9 +470,10 @@ pub fn discover(
         }
     }
 
+    let roles = attribute(&roots, &snapshot.processes, &by_pid);
     let mut runners: Vec<Runner> = Vec::with_capacity(roots.len());
-    for root in roots {
-        runners.push(inspect(root, snapshot, &children, &by_pid, cache));
+    for (root, roles) in roots.into_iter().zip(&roles) {
+        runners.push(inspect(root, roles, &children, &by_pid, cache));
     }
 
     // Busy first, then idle, then offline; alphabetical inside each group.
@@ -482,7 +494,7 @@ pub fn discover(
 /// Reads one runner root's config, log and process state.
 fn inspect(
     root: PathBuf,
-    snapshot: &Snapshot,
+    roles: &Roles,
     children: &HashMap<u32, Vec<u32>>,
     by_pid: &HashMap<u32, &ProcInfo>,
     cache: &mut LogCache,
@@ -495,27 +507,20 @@ fn inspect(
             .unwrap_or_else(|| "_work".to_string()),
     );
 
-    let mut listener_pid = None;
-    let mut supervisor_pid = None;
-    let mut worker_pids = Vec::new();
+    let listener_pid = roles.listener;
+    let supervisor_pid = roles.supervisor;
+    let worker_pids = roles.workers.clone();
 
-    for proc in &snapshot.processes {
-        if !belongs_to(proc, &root) {
-            continue;
-        }
-        match classify(proc) {
-            Some(Role::Listener) => listener_pid = Some(proc.pid),
-            Some(Role::Worker) => worker_pids.push(proc.pid),
-            Some(Role::Supervisor) => supervisor_pid = Some(proc.pid),
-            None => {}
-        }
-    }
-    worker_pids.sort_unstable();
-
-    let (listener_cpu, listener_mem, listener_uptime) = listener_pid
+    // Counters read as zero for a process garld may not open, and a zeroed
+    // start time makes any age meaningless. Report nothing rather than zeroes.
+    let listener_cost = listener_pid
         .and_then(|pid| by_pid.get(&pid))
-        .map(|p| (p.cpu_percent, p.mem_bytes, p.run_secs))
-        .unwrap_or((0.0, 0, 0));
+        .filter(|p| p.start_time != 0)
+        .map(|p| ListenerCost {
+            cpu_percent: p.cpu_percent,
+            mem_bytes: p.mem_bytes,
+            uptime_secs: p.run_secs,
+        });
 
     // A job's true cost is the worker plus everything it spawned — compilers,
     // test runners, docker clients. Walk the subtree rather than trusting the
@@ -603,9 +608,7 @@ fn inspect(
         supervisor_pid,
         listener_pid,
         worker_pids,
-        listener_cpu,
-        listener_mem,
-        listener_uptime,
+        listener_cost,
         job_cpu,
         job_mem,
         job_pids,
@@ -643,10 +646,106 @@ fn strip_exe(name: &str) -> String {
 }
 
 /// What part a process plays in a runner install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
     Supervisor,
     Listener,
     Worker,
+}
+
+/// Which processes serve one install.
+#[derive(Debug, Default, Clone)]
+struct Roles {
+    supervisor: Option<u32>,
+    listener: Option<u32>,
+    workers: Vec<u32>,
+}
+
+impl Roles {
+    fn place(&mut self, pid: u32, role: Role) {
+        match role {
+            Role::Supervisor => self.supervisor = Some(pid),
+            Role::Listener => self.listener = Some(pid),
+            Role::Worker => self.workers.push(pid),
+        }
+    }
+}
+
+/// Assigns every runner process on the host to the install it serves.
+///
+/// Resolved across all roots at once, because placing one process can settle
+/// another. A process that names its own executable is placed directly by
+/// [`belongs_to`]. One that cannot name it ([`identifies_itself`]) is placed by
+/// structure instead, using the tree the runner itself builds: the service
+/// wrapper spawns the listener, and the listener spawns a worker per job. So an
+/// unreadable worker or wrapper is placed from the listener beside it, and only
+/// the listener itself has to be guessed at.
+///
+/// That guess stays deliberately narrow — one unplaced listener joins one root
+/// still missing one. Two of each is genuinely ambiguous from an unprivileged
+/// process table, and attributing another install's job to this runner is worse
+/// than admitting ignorance, so neither is placed and both read offline.
+fn attribute<'a>(
+    roots: &[PathBuf],
+    processes: &'a [ProcInfo],
+    by_pid: &HashMap<u32, &ProcInfo>,
+) -> Vec<Roles> {
+    let mut roles = vec![Roles::default(); roots.len()];
+    let mut unplaced: Vec<(&'a ProcInfo, Role)> = Vec::new();
+
+    for proc in processes {
+        let Some(role) = classify(proc) else {
+            continue;
+        };
+        if let Some(idx) = roots.iter().position(|root| belongs_to(proc, root)) {
+            roles[idx].place(proc.pid, role);
+        } else if !identifies_itself(proc) {
+            unplaced.push((proc, role));
+        }
+        // A runner process that *does* name a path, under none of these roots,
+        // serves an install garld wasn't asked about. Leaving it out is right.
+    }
+
+    // The lone-listener case, which is every ordinary single-runner host.
+    let orphans: Vec<u32> = unplaced
+        .iter()
+        .filter(|(_, role)| *role == Role::Listener)
+        .map(|(proc, _)| proc.pid)
+        .collect();
+    let vacant: Vec<usize> = roles
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.listener.is_none())
+        .map(|(idx, _)| idx)
+        .collect();
+    if let ([pid], [idx]) = (orphans.as_slice(), vacant.as_slice()) {
+        roles[*idx].listener = Some(*pid);
+    }
+
+    // Workers and wrappers now follow the listener they hang off.
+    for (proc, role) in &unplaced {
+        let owner = match role {
+            Role::Worker => proc
+                .parent
+                .and_then(|parent| roles.iter().position(|e| e.listener == Some(parent))),
+            Role::Supervisor => roles.iter().position(|entry| {
+                entry
+                    .listener
+                    .and_then(|pid| by_pid.get(&pid))
+                    .and_then(|listener| listener.parent)
+                    == Some(proc.pid)
+            }),
+            Role::Listener => None,
+        };
+        if let Some(idx) = owner {
+            roles[idx].place(proc.pid, *role);
+        }
+    }
+
+    for entry in &mut roles {
+        entry.workers.sort_unstable();
+    }
+    roles
 }
 
 fn classify(proc: &ProcInfo) -> Option<Role> {
@@ -659,6 +758,9 @@ fn classify(proc: &ProcInfo) -> Option<Role> {
     match stem.as_str() {
         "Runner.Listener" => Some(Role::Listener),
         "Runner.Worker" => Some(Role::Worker),
+        // The Windows service host, which launches and restarts the listener.
+        // The Unix equivalent is a shell wrapper, handled below.
+        "RunnerService" => Some(Role::Supervisor),
         _ => {
             // Wrapper scripts show up as bash/sh with the script in argv.
             let cmd = proc.command.as_str();
@@ -676,6 +778,20 @@ fn classify(proc: &ProcInfo) -> Option<Role> {
 fn belongs_to(proc: &ProcInfo, root: &Path) -> bool {
     let root = root.to_string_lossy();
     proc.exe.as_deref().is_some_and(|e| e.starts_with(&*root)) || proc.command.contains(&*root)
+}
+
+/// Whether a process carries enough path detail for [`belongs_to`] to judge it.
+///
+/// `sysinfo` can name a process the current user may not open, but not say
+/// where it was launched from: `exe` is empty and the command line degrades to
+/// the bracketed placeholder `[name]`. That is the normal view of a Windows
+/// runner service from an unelevated garld — the listener runs as
+/// `LocalSystem`. Without this distinction a failed [`belongs_to`] reads as
+/// "not this install", when the honest answer is "cannot tell from the path",
+/// and every service-installed Windows runner reports itself offline while it
+/// is happily running jobs.
+fn identifies_itself(proc: &ProcInfo) -> bool {
+    proc.exe.is_some() || proc.command.contains(['/', '\\'])
 }
 
 /// Recovers an install root from a runner process's own paths.
@@ -754,17 +870,51 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// The service identifier from `.service`, which holds a unit or plist path.
+/// The service identifier from `.service`.
+///
+/// What the file holds depends on which `svc` script wrote it: a systemd unit
+/// path on Linux, a launchd plist path on macOS, and on Windows the bare
+/// service name — no directory, no extension.
+///
+/// Deliberately not `Path::file_stem`, for the same reason as [`binary_name`]:
+/// the identifier is itself dotted, `actions.runner.<org>.<host>`, so
+/// `file_stem` reads `.<host>` as an extension and drops the host — turning
+/// `actions.runner.acme.BUILD01` into `actions.runner.acme`. On Windows, where
+/// the name arrives bare, that mangles every runner's service name.
 fn read_service(root: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(root.join(".service")).ok()?;
-    let raw = raw.trim();
+    parse_service(&std::fs::read_to_string(root.join(".service")).ok()?)
+}
+
+/// See [`read_service`]; split out so every platform's shape can be tested.
+fn parse_service(raw: &str) -> Option<String> {
+    // Same BOM as `.runner`.
+    let raw = raw.trim_start_matches('\u{feff}').trim();
     if raw.is_empty() {
         return None;
     }
-    Path::new(raw)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .or_else(|| Some(raw.to_owned()))
+    // Split on both separators rather than using `Path::file_name`, so a
+    // Windows-shaped path parses the same way wherever garld is built.
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    if last.is_empty() {
+        return None;
+    }
+    Some(strip_unit_ext(last).to_string())
+}
+
+/// Strips the extension a service manager appends, and only that.
+///
+/// Anything else — including the `.<host>` tail that ends every runner service
+/// name — is part of the identifier and stays.
+fn strip_unit_ext(name: &str) -> &str {
+    for ext in [".service", ".plist"] {
+        if let Some(cut) = name.len().checked_sub(ext.len())
+            && name.is_char_boundary(cut)
+            && name[cut..].eq_ignore_ascii_case(ext)
+        {
+            return &name[..cut];
+        }
+    }
+    name
 }
 
 /// Maps a checkout directory under `_work` to the `owner/repo` that owns it.
@@ -1275,6 +1425,135 @@ mod tests {
         assert_eq!(strip_exe("Runner.Listener"), "Runner.Listener");
         assert_eq!(strip_exe("node.EXE"), "node");
         assert_eq!(strip_exe("exe"), "exe");
+    }
+
+    #[test]
+    fn service_names_keep_the_host_that_ends_them() {
+        // Windows writes the bare service name — there is nothing to strip, and
+        // `file_stem` used to eat the host here.
+        assert_eq!(
+            parse_service("actions.runner.acme.BUILD01").unwrap(),
+            "actions.runner.acme.BUILD01"
+        );
+        // Linux writes a unit path, macOS a plist path. Directory and extension
+        // go; the dotted identifier survives intact.
+        assert_eq!(
+            parse_service("/etc/systemd/system/actions.runner.acme.BUILD01.service\n").unwrap(),
+            "actions.runner.acme.BUILD01"
+        );
+        assert_eq!(
+            parse_service("/Users/ci/Library/LaunchAgents/actions.runner.acme.BUILD01.plist")
+                .unwrap(),
+            "actions.runner.acme.BUILD01"
+        );
+        // A BOM, and a file that says nothing.
+        assert_eq!(
+            parse_service("\u{feff}actions.runner.acme.BUILD01").unwrap(),
+            "actions.runner.acme.BUILD01"
+        );
+        assert!(parse_service("   \n").is_none());
+    }
+
+    /// A process table entry carrying only what attribution reads.
+    ///
+    /// `exe: None` models a process the current user may not open: no path, and
+    /// the bracketed placeholder `sysinfo` substitutes for the command line.
+    fn proc(pid: u32, parent: u32, name: &str, exe: Option<&str>) -> ProcInfo {
+        ProcInfo {
+            pid,
+            parent: Some(parent),
+            name: name.to_string(),
+            user: None,
+            cpu_percent: 0.0,
+            mem_bytes: 0,
+            mem_percent: 0.0,
+            virtual_bytes: 0,
+            status: "Runnable".to_string(),
+            run_secs: 0,
+            cpu_time_ms: 0,
+            threads: None,
+            command: exe
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("[{name}]")),
+            exe: exe.map(str::to_string),
+            cwd: None,
+            disk_read: 0,
+            disk_written: 0,
+            disk_read_total: 0,
+            disk_written_total: 0,
+            start_time: if exe.is_some() { 1 } else { 0 },
+        }
+    }
+
+    fn placed(roots: &[PathBuf], processes: &[ProcInfo]) -> Vec<Roles> {
+        let by_pid: HashMap<u32, &ProcInfo> = processes.iter().map(|p| (p.pid, p)).collect();
+        attribute(roots, processes, &by_pid)
+    }
+
+    #[test]
+    fn finds_a_windows_service_runner_it_cannot_open() {
+        // Exactly what an unelevated garld sees on Windows: the names, and
+        // nothing else. Before, every one of these runners read "offline".
+        let roots = vec![PathBuf::from("C:\\actions-runner")];
+        let procs = vec![
+            proc(7880, 1000, "RunnerService.exe", None),
+            proc(4328, 7880, "Runner.Listener.exe", None),
+            proc(500, 1, "chrome.exe", Some("C:\\chrome\\chrome.exe")),
+        ];
+
+        let roles = placed(&roots, &procs);
+        assert_eq!(roles[0].listener, Some(4328));
+        assert_eq!(roles[0].supervisor, Some(7880));
+        assert!(roles[0].workers.is_empty());
+    }
+
+    #[test]
+    fn a_worker_follows_the_listener_that_spawned_it() {
+        let roots = vec![PathBuf::from("C:\\actions-runner")];
+        let procs = vec![
+            proc(7880, 1000, "RunnerService.exe", None),
+            proc(4328, 7880, "Runner.Listener.exe", None),
+            proc(4672, 4328, "Runner.Worker.exe", None),
+        ];
+
+        let roles = placed(&roots, &procs);
+        assert_eq!(roles[0].workers, vec![4672]);
+    }
+
+    #[test]
+    fn a_readable_path_outranks_the_guess() {
+        let roots = vec![
+            PathBuf::from("C:\\actions-runner"),
+            PathBuf::from("D:\\second-runner"),
+        ];
+        let procs = vec![proc(
+            4328,
+            7880,
+            "Runner.Listener.exe",
+            Some("D:\\second-runner\\bin\\Runner.Listener.exe"),
+        )];
+
+        let roles = placed(&roots, &procs);
+        assert_eq!(roles[0].listener, None);
+        assert_eq!(roles[1].listener, Some(4328));
+    }
+
+    #[test]
+    fn refuses_to_guess_between_two_unreadable_listeners() {
+        // Two installs, two nameless listeners: nothing distinguishes them, and
+        // crediting one runner with the other's work would be worse than
+        // reporting neither.
+        let roots = vec![
+            PathBuf::from("C:\\actions-runner"),
+            PathBuf::from("D:\\second-runner"),
+        ];
+        let procs = vec![
+            proc(4328, 7880, "Runner.Listener.exe", None),
+            proc(4329, 7881, "Runner.Listener.exe", None),
+        ];
+
+        let roles = placed(&roots, &procs);
+        assert!(roles.iter().all(|entry| entry.listener.is_none()));
     }
 
     #[test]

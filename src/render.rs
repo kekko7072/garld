@@ -268,16 +268,26 @@ fn runner_block(runner: &Runner, now: i64, opts: &ViewOptions) -> String {
             );
         }
         (None, _) => {
+            // The listener's own cost is unreadable when garld can't open the
+            // process, which is the norm for a Windows service runner. Say so
+            // rather than printing zeroes it can't stand behind.
+            let cost = match runner.listener_cost {
+                Some(cost) => format!(
+                    " {d}· up {up}{d:#} {d}· {cpu:.1}% cpu, {mem}{d:#}",
+                    d = dim(),
+                    up = fmt::duration(cost.uptime_secs),
+                    cpu = cost.cpu_percent,
+                    mem = fmt::bytes(cost.mem_bytes),
+                ),
+                None => format!(" {d}· cost unavailable (needs elevation){d:#}", d = dim()),
+            };
             let _ = writeln!(
                 out,
-                "  {d}waiting for work{d:#} {d}· listener pid {}{d:#} {d}· up {}{d:#} {d}· {:.1}% cpu, {}{d:#}",
-                runner
+                "  {d}waiting for work{d:#} {d}· listener pid {pid}{d:#}{cost}",
+                pid = runner
                     .listener_pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".into()),
-                fmt::duration(runner.listener_uptime),
-                runner.listener_cpu,
-                fmt::bytes(runner.listener_mem),
                 d = dim(),
             );
         }
@@ -319,7 +329,10 @@ fn active_job_line(runner: &Runner, job: &Job, now: i64, _opts: &ViewOptions) ->
             .listener_pid
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".into()),
-        up = fmt::duration(runner.listener_uptime),
+        up = runner
+            .listener_cost
+            .map(|cost| fmt::duration(cost.uptime_secs))
+            .unwrap_or_else(|| "?".into()),
     );
     out
 }
